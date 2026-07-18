@@ -27,7 +27,7 @@ symbolInput.addEventListener("input", function() {
     
     acTimeout = setTimeout(async () => {
         try {
-            const res = await fetch('http://127.0.0.1:5000/api/autocomplete?q=' + q);
+            const res = await fetch('/api/autocomplete?q=' + q);
             const matches = await res.json();
             if (matches.length === 0) { acDropdown.style.display = 'none'; return; }
             
@@ -267,7 +267,7 @@ async function analyzeSymbol() {
     simulateTerminalLogs(symbol);
 
     try {
-        const response = await fetch('http://127.0.0.1:5000/api/analyze?symbol=' + symbol);
+        const response = await fetch('/api/analyze?symbol=' + symbol);
         const data = await response.json();
 
         // Let the logs finish reading
@@ -992,7 +992,7 @@ async function startRadar(type) {
     tbodyEl.innerHTML = '';
 
     try {
-        const response = await fetch('http://127.0.0.1:5000' + endpoint);
+        const response = await fetch(endpoint);
         const data = await response.json();
 
         loadingEl.style.display = 'none';
@@ -1035,7 +1035,7 @@ window.onload = function() {
 
 async function fetchDashboardData() {
     try {
-        const response = await fetch('http://127.0.0.1:5000/api/dashboard_init');
+        const response = await fetch('/api/dashboard_init');
         const data = await response.json();
         
         if (data.status === 'success') {
