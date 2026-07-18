@@ -393,7 +393,8 @@ if __name__ == '__main__':
     print("🛠️ VarantRadar Pro Web Server Başlatılıyor...")
     
     # Render'da çalışıyorsa Render'ın URL'sini, yoksa yerel URL'yi göster
-    port = int(os.getenv('PORT', 5000))
+    if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000)
     render_url = os.getenv('RENDER_EXTERNAL_URL')
     if render_url:
         print(f"🔗 Sunucu şu adreste çalışıyor: {render_url}")
