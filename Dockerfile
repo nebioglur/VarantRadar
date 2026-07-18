@@ -24,4 +24,4 @@ EXPOSE 8000
 HEALTHCHECK CMD curl --fail http://localhost:8501/_stcore/health || exit 1
 
 # Başlangıç komutu (Şimdilik sadece Streamlit. İleride gunicorn ile API ayağa kalkacak)
-CMD ["streamlit", "run", "app.py", "--server.port=8501", "--server.address=0.0.0.0"]
+CMD ["python", "server.py"]
