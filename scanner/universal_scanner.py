@@ -76,7 +76,7 @@ class UniversalScanner:
         print(f"[SCANNER] {len(symbols)} hisse tek seferde indiriliyor (Bulk Download)...")
         
         # Toplu indirme:
-        data = yf.download(symbols, period="3mo", interval="1d", group_by='ticker', threads=True, progress=False)
+        data = yf.download(symbols, period="3mo", interval="1d", group_by='ticker', threads=False, progress=False)
         
         all_results = []
         
@@ -160,3 +160,49 @@ class UniversalScanner:
         tech_result["Price"] = round(close_today, 2)
         
         return tech_result
+
+    def scan_pool_bulk_1h(self, symbols: List[str]) -> List[Dict[str, Any]]:
+        """
+        1 Saatlik (1h) periyotta teknik fırsat taraması yapar.
+        Yalnızca Score_5 >= 3 (Potansiyel) olanları döndürür.
+        """
+        EventBus.publish("SCAN_STARTED", {"total": len(symbols), "mode": "bulk_1h"})
+        print(f"[SCANNER 1H] {len(symbols)} hisse 1 saatlik periyotta indiriliyor...")
+        
+        # 1 Saatlik periyot max 730 gün destekler. 1mo yeterli.
+        data = yf.download(symbols, period="1mo", interval="1h", group_by='ticker', threads=False, progress=False)
+        
+        opportunities = []
+        
+        if len(symbols) == 1:
+            sym = symbols[0]
+            df = data.dropna(how='all').copy()
+            res = self._process_bulk_df_1h(sym, df)
+            if res: opportunities.append(res)
+        else:
+            for sym in symbols:
+                if hasattr(data.columns, 'levels') and sym in data.columns.levels[0]:
+                    df = data[sym].dropna(how='all').copy()
+                    res = self._process_bulk_df_1h(sym, df)
+                    if res: opportunities.append(res)
+                    
+        # Score_5 (0-5) puanına göre sırala (5 en iyi)
+        opportunities = sorted(opportunities, key=lambda x: x["Score_5"], reverse=True)
+        print(f"[SCANNER 1H] Tarama tamamlandı. {len(opportunities)} fırsat bulundu.")
+        return opportunities
+
+    def _process_bulk_df_1h(self, symbol: str, df: pd.DataFrame) -> Dict[str, Any]:
+        if df.empty or len(df) < 30:
+            return None
+            
+        df.columns = [str(c).lower() for c in df.columns]
+        required_cols = ['open', 'high', 'low', 'close', 'volume']
+        for col in required_cols:
+            if col not in df.columns:
+                return None
+                
+        df['close'] = df['close'].ffill()
+        df = df[required_cols]
+        
+        # 1 saatlik teknik analizi çağır
+        return self.tech_engine.analyze_1h_opportunities(symbol, df)

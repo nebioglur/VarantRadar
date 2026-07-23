@@ -6,6 +6,17 @@ let chartInstance = null;
 let svrChartInstance = null;
 let currentProjections = null;
 
+// Chart State
+window.globalCharts = [];
+window.globalSeries = {};
+window.globalChartData = null;
+
+function resetChartView() {
+    if (window.globalCharts && window.globalCharts.length > 0) {
+        window.globalCharts.forEach(c => c.timeScale().fitContent());
+    }
+}
+
 // ========== DOM ELEMENTS ==========
 function setElText(id, text) {
     const el = document.getElementById(id);
@@ -114,6 +125,13 @@ function switchSubTab(tabName, btnElement) {
     
     document.querySelectorAll('#dashboard-wrapper .s-tab').forEach(btn => btn.classList.remove('active'));
     if(btnElement) btnElement.classList.add('active');
+    
+    if (tabName === 'akd') {
+        const symbol = document.getElementById('tk-sym').innerText;
+        if (symbol && symbol !== 'SEMBOL') {
+            fetchAKDData(symbol);
+        }
+    }
 }
 
 function switchRadarTab(tabName, btnElement) {
@@ -179,6 +197,63 @@ async function scanHomeOpportunities() {
         }
     } catch (e) {
         contentBox.innerHTML = `<p style="color:var(--accent-red); text-align:center;">Bağlantı hatası: ${e.message}</p>`;
+    }
+}
+
+async function fetchAKDData(symbol) {
+    const loading = document.getElementById('akd-loading');
+    const content = document.getElementById('akd-content');
+    loading.style.display = 'block';
+    content.style.display = 'none';
+    
+    try {
+        const res = await fetch('/api/brokerage/' + symbol);
+        const data = await res.json();
+        
+        if (data.status === 'success') {
+            loading.style.display = 'none';
+            content.style.display = 'block';
+            
+            // Populate Buyers
+            const bBody = document.getElementById('akd-buyers-tbody');
+            bBody.innerHTML = '';
+            data.buyers.forEach(b => {
+                bBody.innerHTML += `<tr>
+                    <td style="font-weight:bold; color:var(--text-main);">${b.broker}</td>
+                    <td style="font-family:monospace;">${b.lots.toLocaleString('tr-TR')}</td>
+                    <td>%${b.percent}</td>
+                    <td style="color:var(--accent-green); font-weight:bold;">₺${b.cost}</td>
+                </tr>`;
+            });
+            bBody.innerHTML += `<tr><td style="color:var(--text-muted);">Diğer</td><td colspan="3" style="color:var(--text-muted); text-align:right;">%${data.buy_other_pct}</td></tr>`;
+            
+            // Populate Sellers
+            const sBody = document.getElementById('akd-sellers-tbody');
+            sBody.innerHTML = '';
+            data.sellers.forEach(s => {
+                sBody.innerHTML += `<tr>
+                    <td style="font-weight:bold; color:var(--text-main);">${s.broker}</td>
+                    <td style="font-family:monospace;">${s.lots.toLocaleString('tr-TR')}</td>
+                    <td>%${s.percent}</td>
+                    <td style="color:var(--accent-red); font-weight:bold;">₺${s.cost}</td>
+                </tr>`;
+            });
+            sBody.innerHTML += `<tr><td style="color:var(--text-muted);">Diğer</td><td colspan="3" style="color:var(--text-muted); text-align:right;">%${data.sell_other_pct}</td></tr>`;
+            
+            // Net Difference
+            const netDiffEl = document.getElementById('akd-net-diff');
+            if (data.net_diff_lots > 0) {
+                netDiffEl.innerHTML = `<span style="color:var(--accent-green);">+${data.net_diff_lots.toLocaleString('tr-TR')} Lot (Para Girişi)</span>`;
+            } else if (data.net_diff_lots < 0) {
+                netDiffEl.innerHTML = `<span style="color:var(--accent-red);">${data.net_diff_lots.toLocaleString('tr-TR')} Lot (Para Çıkışı)</span>`;
+            } else {
+                netDiffEl.innerHTML = `<span style="color:var(--text-muted);">Dengeli</span>`;
+            }
+        } else {
+            loading.innerHTML = `<p style="color:var(--accent-red);">Hata: ${data.message}</p>`;
+        }
+    } catch (e) {
+        loading.innerHTML = `<p style="color:var(--accent-red);">Bağlantı Hatası: ${e.message}</p>`;
     }
 }
 
@@ -406,151 +481,424 @@ function calculateMACD(data, shortP=12, longP=26, sigP=9) {
     return {macd: macdResult, signal: signalResult, hist: histogram};
 }
 
-// MAKE SURE IT IS GLOBAL SO HTML ONCLICK CAN SEE IT
-window.renderAdvancedChart = function() {
-    if(!currentChartData || currentChartData.length === 0) return;
-    
-    const showEma = document.getElementById('toggle-ema')?.checked;
-    const showVol = document.getElementById('toggle-vol')?.checked;
-    const showMacd = document.getElementById('toggle-macd')?.checked;
-    const showRsi = document.getElementById('toggle-rsi')?.checked;
-    
-    const priceDiv = document.getElementById('chart-price');
-    const macdDiv = document.getElementById('chart-macd');
-    const rsiDiv = document.getElementById('chart-rsi');
-    
-    if(chartPriceInstance) { chartPriceInstance.destroy(); chartPriceInstance = null; }
-    if(chartMacdInstance) { chartMacdInstance.destroy(); chartMacdInstance = null; }
-    if(chartRsiInstance) { chartRsiInstance.destroy(); chartRsiInstance = null; }
-    
-    macdDiv.style.display = showMacd ? "block" : "none";
-    rsiDiv.style.display = showRsi ? "block" : "none";
-    
-    // Adjust layout based on toggles
-    let priceHeight = (showMacd || showRsi) ? "350px" : "100%";
-    priceDiv.style.height = priceHeight;
+let lwChart = null;
+let lwCandleSeries = null;
+let lwVolumeSeries = null;
+let lwEma8Series = null;
+let lwEma21Series = null;
+let lwMacdSeries = null;
+let lwMacdSignalSeries = null;
+let lwMacdHistSeries = null;
 
-    const seriesData = currentChartData.map(r => ({x: new Date(r.time).getTime(), y: [r.open, r.high, r.low, r.close]}));
-    const volData = currentChartData.map(r => ({x: new Date(r.time).getTime(), y: r.volume}));
-    
-    let priceSeries = [{ name: 'Fiyat', type: 'candlestick', data: seriesData }];
-    let priceStroke = [1];
-    let priceColors = ['#10B981']; 
-    
-    if(showEma) {
-        priceSeries.push({ name: 'EMA 8', type: 'line', data: calculateEMA(seriesData, 8) });
-        priceSeries.push({ name: 'EMA 21', type: 'line', data: calculateEMA(seriesData, 21) });
-        priceSeries.push({ name: 'EMA 50', type: 'line', data: calculateEMA(seriesData, 50) });
-        priceStroke.push(2, 2, 2);
-        priceColors.push('#3b82f6', '#f59e0b', '#ec4899');
-    }
-    
-    if(showVol) {
-        priceSeries.push({ name: 'Hacim', type: 'bar', data: volData });
-        priceStroke.push(0);
-        priceColors.push('#64748b');
-    }
-    
-    let priceDashes = new Array(priceSeries.length).fill(0);
-    const showSvr = document.getElementById('toggle-svr')?.checked;
-    
-    if(showSvr && window.currentProjections) {
-        let svrObj = window.currentProjections.Weekly_Daily; // Default for main chart
-        if (svrObj) {
-            let pastPred = svrObj.past_predicted || [];
-            let futurePred = svrObj.future_predicted || svrObj.data || [];
-            let combined = [...pastPred, ...futurePred];
-            
-            if (combined.length > 0 && combined[0].timestamp) {
-                let svrSeriesData = combined.map(d => ({
-                    x: new Date(d.timestamp).getTime(),
-                    y: d.expected_close || d.expected
-                }));
-                
-                priceSeries.push({ name: 'Prophet 3D (Backtest + Gelecek)', type: 'line', data: svrSeriesData });
-                priceStroke.push(3);
-                priceColors.push('#a855f7');
-                priceDashes.push(5);
-            }
-        }
-    }
-    
-    let commonOptions = {
-        chart: { background: 'transparent', toolbar: { show: false }, group: 'sync-charts' },
-        theme: { mode: 'dark' },
-        xaxis: { type: 'datetime', labels: { style: { colors: '#94A3B8' } }, axisBorder: { show: false }, axisTicks: { show: false }, tooltip: {enabled: false} },
-        grid: { borderColor: 'rgba(255,255,255,0.05)', strokeDashArray: 4 },
-        dataLabels: { enabled: false }
-    };
+window.currentChartSymbol = '';
+window.currentChartInterval = '1d';
 
-    var optionsPrice = {
-        ...commonOptions,
-        chart: { ...commonOptions.chart, height: '100%', id: 'price-chart', toolbar: {show:true, tools: {download:false}} },
-        series: priceSeries,
-        stroke: { width: priceStroke, curve: 'smooth', dashArray: priceDashes },
-        colors: priceColors,
-        yaxis: [
-            { tooltip: { enabled: true }, labels: { style: { colors: '#94A3B8' }, formatter: (v) => v ? v.toFixed(2) : "" } },
-            ...priceSeries.slice(1).map(s => ({
-                show: false, 
-                seriesName: s.name,
-                max: s.name === 'Hacim' ? Math.max(...volData.map(v=>v.y))*5 : undefined
-            }))
-        ],
-        plotOptions: {
-            candlestick: { colors: { upward: '#10B981', downward: '#EF4444' }, wick: { useFillColor: true } },
-            bar: { columnWidth: '80%' }
-        }
-    };
-    chartPriceInstance = new ApexCharts(priceDiv, optionsPrice);
-    chartPriceInstance.render();
-
-    if(showMacd) {
-        let macdObj = calculateMACD(seriesData);
-        var optionsMacd = {
-            ...commonOptions,
-            chart: { ...commonOptions.chart, height: '100%', id: 'macd-chart' },
-            series: [
-                { name: 'MACD', type: 'line', data: macdObj.macd },
-                { name: 'Signal', type: 'line', data: macdObj.signal },
-                { name: 'Hist', type: 'bar', data: macdObj.hist }
-            ],
-            stroke: { width: [2, 2, 0], curve: 'smooth' },
-            colors: ['#3b82f6', '#f59e0b', function({value}) { return value >= 0 ? '#10B981' : '#EF4444' }],
-            yaxis: { labels: { style: { colors: '#94A3B8' }, formatter: (v) => v ? v.toFixed(2) : "" } },
-            plotOptions: { bar: { columnWidth: '80%', colors: { ranges: [{ from: -9999, to: -0.001, color: '#EF4444' }, { from: 0, to: 9999, color: '#10B981' }] } } }
-        };
-        chartMacdInstance = new ApexCharts(macdDiv, optionsMacd);
-        chartMacdInstance.render();
-    }
-
-    if(showRsi) {
-        var optionsRsi = {
-            ...commonOptions,
-            chart: { ...commonOptions.chart, height: '100%', id: 'rsi-chart' },
-            series: [{ name: 'RSI', type: 'line', data: calculateRSI(seriesData) }],
-            stroke: { width: 2, curve: 'smooth' },
-            colors: ['#a855f7'],
-            yaxis: { min: 0, max: 100, tickAmount: 2, labels: { style: { colors: '#94A3B8' }, formatter: (v) => v ? v.toFixed(0) : "" } },
-            annotations: {
-                yaxis: [
-                    { y: 70, borderColor: '#EF4444', strokeDashArray: 2, label: { text: '70', style: { color: '#fff', background: '#EF4444' } } },
-                    { y: 30, borderColor: '#10B981', strokeDashArray: 2, label: { text: '30', style: { color: '#fff', background: '#10B981' } } }
-                ]
-            }
-        };
-        chartRsiInstance = new ApexCharts(rsiDiv, optionsRsi);
-        chartRsiInstance.render();
-    }
+window.changeChartInterval = async function(interval) {
+    window.currentChartInterval = interval;
+    // Update active button
+    document.querySelectorAll('.tf-btn').forEach(btn => btn.classList.remove('active'));
+    if(event && event.target) event.target.classList.add('active');
+    
+    await window.renderAdvancedChart();
 }
 
-function loadCustomChart(sym, ohlcData) {
-    if (!ohlcData || ohlcData.length === 0) {
-        document.getElementById('chart-price').innerHTML = "<div style='color:var(--text-muted); padding:20px; text-align:center;'>Grafik verisi bulunamadı.</div>";
-        return;
+window.renderAdvancedChart = async function() {
+    if(!window.currentChartSymbol) return;
+    const tvContainer = document.getElementById('tv-chart');
+    if (!tvContainer) return;
+    tvContainer.innerHTML = '<div style="color:var(--text-muted); padding:20px; text-align:center;">Veri yükleniyor...</div>';
+    
+    try {
+        const response = await fetch(`/api/chart_data?symbol=${window.currentChartSymbol}&interval=${window.currentChartInterval}`);
+        const data = await response.json();
+        if(data.status !== "success") {
+            tvContainer.innerHTML = `<div style="color:red; padding:20px; text-align:center;">Hata: ${data.message}</div>`;
+            return;
+        }
+        tvContainer.innerHTML = ''; // clear loading
+        
+        // Filter out invalid candles (e.g., Yahoo Finance sometimes returns incomplete current-day bars with NaN/null open/high/low)
+        // If we pass null to the CandlestickSeries, it fails silently and the entire pane goes blank.
+        if (data.candles) {
+            data.candles = data.candles.filter(c => c.open != null && c.high != null && c.low != null && c.close != null);
+        }
+        
+        // Create 6 separate divs for 6 panes
+        const div1 = document.createElement('div'); div1.style.flex = '0 0 40%'; div1.style.position = 'relative'; div1.style.minHeight = '250px';
+        const div2 = document.createElement('div'); div2.style.flex = '0 0 12%'; div2.style.position = 'relative'; div2.style.minHeight = '80px';
+        const div3 = document.createElement('div'); div3.style.flex = '0 0 12%'; div3.style.position = 'relative'; div3.style.minHeight = '80px';
+        const div4 = document.createElement('div'); div4.style.flex = '0 0 12%'; div4.style.position = 'relative'; div4.style.minHeight = '80px';
+        const div5 = document.createElement('div'); div5.style.flex = '0 0 12%'; div5.style.position = 'relative'; div5.style.minHeight = '80px';
+        const div6 = document.createElement('div'); div6.style.flex = '0 0 12%'; div6.style.position = 'relative'; div6.style.minHeight = '80px';
+        
+        tvContainer.appendChild(div1);
+        tvContainer.appendChild(div2);
+        tvContainer.appendChild(div3);
+        tvContainer.appendChild(div4);
+        tvContainer.appendChild(div5);
+        tvContainer.appendChild(div6);
+        
+        const commonOptions = {
+            layout: { textColor: '#94A3B8', background: { type: 'solid', color: 'transparent' } },
+            grid: { vertLines: { color: 'rgba(255,255,255,0.05)' }, horzLines: { color: 'rgba(255,255,255,0.05)' } },
+            crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+            rightPriceScale: { borderColor: '#334155', autoScale: true }
+        };
+        
+        const c1 = LightweightCharts.createChart(div1, { 
+            ...commonOptions, 
+            timeScale: { visible: false },
+            watermark: {
+                color: 'rgba(255, 255, 255, 0.04)',
+                visible: true,
+                text: window.currentChartSymbol || 'RADAR PRO',
+                fontSize: 120,
+                horzAlign: 'center',
+                vertAlign: 'center',
+            }
+        });
+        const c2 = LightweightCharts.createChart(div2, { ...commonOptions, timeScale: { visible: false }});
+        const c3 = LightweightCharts.createChart(div3, { ...commonOptions, timeScale: { visible: false }});
+        const c4 = LightweightCharts.createChart(div4, { ...commonOptions, timeScale: { visible: false }});
+        const c5 = LightweightCharts.createChart(div5, { ...commonOptions, timeScale: { visible: false }});
+        const c6 = LightweightCharts.createChart(div6, { ...commonOptions, timeScale: { timeVisible: true, secondsVisible: false, borderColor: '#334155' }});
+        
+        window.lwChart = c1; // Keep reference to main chart for backward compat
+        
+        if (window.chartResizeObserver) {
+            window.chartResizeObserver.disconnect();
+        }
+        
+        window.chartResizeObserver = new ResizeObserver(entries => {
+            if (entries.length === 0 || entries[0].target !== tvContainer) return;
+            const width = entries[0].contentRect.width;
+            c1.applyOptions({ width: width, height: div1.clientHeight });
+            c2.applyOptions({ width: width, height: div2.clientHeight });
+            c3.applyOptions({ width: width, height: div3.clientHeight });
+            c4.applyOptions({ width: width, height: div4.clientHeight });
+            c5.applyOptions({ width: width, height: div5.clientHeight });
+            c6.applyOptions({ width: width, height: div6.clientHeight });
+        });
+        window.chartResizeObserver.observe(tvContainer);
+        
+        // PANE 1: Price, EMA, Volume
+        c1.priceScale('right').applyOptions({ scaleMargins: { top: 0.05, bottom: 0.15 } });
+        let sCandle = c1.addCandlestickSeries({ upColor: '#10B981', downColor: '#EF4444', borderVisible: false, wickUpColor: '#10B981', wickDownColor: '#EF4444' });
+        sCandle.setData(data.candles);
+        sCandle.setMarkers(data.annotations);
+        
+        // Draw Support and Resistance Lines
+        if (data.pivots) {
+            const drawLevel = (price, color, title) => {
+                sCandle.createPriceLine({
+                    price: price,
+                    color: color,
+                    lineWidth: 1,
+                    lineStyle: LightweightCharts.LineStyle.Dashed,
+                    axisLabelVisible: true,
+                    title: title,
+                });
+            };
+            drawLevel(data.pivots.R3, 'rgba(239, 68, 68, 0.7)', 'R3');
+            drawLevel(data.pivots.R2, 'rgba(239, 68, 68, 0.7)', 'R2');
+            drawLevel(data.pivots.R1, 'rgba(248, 113, 113, 0.7)', 'R1');
+            drawLevel(data.pivots.P, 'rgba(148, 163, 184, 0.7)', 'Pivot');
+            drawLevel(data.pivots.S1, 'rgba(74, 222, 128, 0.7)', 'S1');
+            drawLevel(data.pivots.S2, 'rgba(16, 185, 129, 0.7)', 'S2');
+            drawLevel(data.pivots.S3, 'rgba(5, 150, 105, 0.7)', 'S3');
+        }
+        
+        let sVol = c1.addHistogramSeries({ color: '#64748b', priceFormat: { type: 'volume' }, priceScaleId: '' });
+        c1.priceScale('').applyOptions({
+            scaleMargins: {
+                top: 0.8,
+                bottom: 0,
+            },
+        });
+        sVol.setData(data.candles.map(c => ({ time: c.time, value: c.volume, color: c.close > c.open ? 'rgba(16, 185, 129, 0.4)' : 'rgba(239, 68, 68, 0.4)' })));
+        
+        let sEma8 = c1.addLineSeries({ color: '#3b82f6', lineWidth: 1 });
+        sEma8.setData(data.candles.map(c => c.ema8 != null ? {time: c.time, value: c.ema8} : {time: c.time}));
+        let sEma21 = c1.addLineSeries({ color: '#f59e0b', lineWidth: 1 });
+        sEma21.setData(data.candles.map(c => c.ema21 != null ? {time: c.time, value: c.ema21} : {time: c.time}));
+        
+        // SuperTrend with Area Shading (Soluk yeşil/kırmızı gölgeler)
+        let sStUp = c1.addAreaSeries({
+            lineColor: 'rgba(16, 185, 129, 0.8)',
+            lineWidth: 2,
+            topColor: 'rgba(16, 185, 129, 0.15)',
+            bottomColor: 'rgba(16, 185, 129, 0.0)',
+            crosshairMarkerVisible: false,
+        });
+        sStUp.setData(data.candles.map(c => (c.supertrend != null && c.supertrend_dir === 1) ? {time: c.time, value: c.supertrend} : {time: c.time}));
+        
+        let sStDown = c1.addAreaSeries({
+            lineColor: 'rgba(239, 68, 68, 0.8)',
+            lineWidth: 2,
+            topColor: 'rgba(239, 68, 68, 0.0)',
+            bottomColor: 'rgba(239, 68, 68, 0.15)',
+            invertFilledArea: true, // Alanı yukarı doğru doldurur
+            crosshairMarkerVisible: false,
+        });
+        sStDown.setData(data.candles.map(c => (c.supertrend != null && c.supertrend_dir === -1) ? {time: c.time, value: c.supertrend} : {time: c.time}));
+
+        
+        // PANE 2: MACD
+        c2.priceScale('right').applyOptions({ scaleMargins: { top: 0.1, bottom: 0.1 } });
+        let sMacd = c2.addLineSeries({ color: '#3b82f6', lineWidth: 1.5 });
+        sMacd.setData(data.candles.map(c => c.macd != null ? {time: c.time, value: c.macd} : {time: c.time}));
+        let sMacdSig = c2.addLineSeries({ color: '#f59e0b', lineWidth: 1.5 });
+        sMacdSig.setData(data.candles.map(c => c.macd_signal != null ? {time: c.time, value: c.macd_signal} : {time: c.time}));
+        let sMacdHist = c2.addHistogramSeries({});
+        sMacdHist.setData(data.candles.map(c => c.macd_hist != null ? {time: c.time, value: c.macd_hist, color: c.macd_hist >= 0 ? 'rgba(16, 185, 129, 0.6)' : 'rgba(239, 68, 68, 0.6)'} : {time: c.time}));
+        
+        // PANE 3: RSI
+        c3.priceScale('right').applyOptions({ scaleMargins: { top: 0.1, bottom: 0.1 } });
+        let sRsi = c3.addBaselineSeries({ 
+            baseValue: { type: 'price', price: 50 }, 
+            topLineColor: '#10B981', 
+            topFillColor1: 'rgba(16, 185, 129, 0.4)', 
+            topFillColor2: 'rgba(16, 185, 129, 0.05)', 
+            bottomLineColor: '#EF4444', 
+            bottomFillColor1: 'rgba(239, 68, 68, 0.05)', 
+            bottomFillColor2: 'rgba(239, 68, 68, 0.4)', 
+            lineWidth: 2 
+        });
+        sRsi.setData(data.candles.map(c => c.rsi != null ? {time: c.time, value: c.rsi} : {time: c.time}));
+        // RSI 70, 50, and 30 Reference Lines
+        sRsi.createPriceLine({ price: 70, color: 'rgba(239, 68, 68, 0.5)', lineWidth: 1, lineStyle: 2, title: '70', axisLabelVisible: true });
+        sRsi.createPriceLine({ price: 50, color: 'rgba(148, 163, 184, 0.5)', lineWidth: 1, lineStyle: 2, title: '50', axisLabelVisible: true });
+        sRsi.createPriceLine({ price: 30, color: 'rgba(16, 185, 129, 0.5)', lineWidth: 1, lineStyle: 2, title: '30', axisLabelVisible: true });
+
+        // PANE 4: ADX
+        c4.priceScale('right').applyOptions({ scaleMargins: { top: 0.1, bottom: 0.1 } });
+        
+        let sAdx = c4.addLineSeries({ lineWidth: 2 });
+        sAdx.setData(data.candles.map(c => {
+            if (c.adx === null) return {time: c.time};
+            let color = '#93c5fd'; // 0-20 (Açık Mavi / Trend Yok)
+            if (c.adx >= 20 && c.adx < 25) color = '#60a5fa'; // 20-25 (Trend Başlangıcı)
+            else if (c.adx >= 25 && c.adx < 50) color = '#3b82f6'; // 25-50 (Güçlü Trend)
+            else if (c.adx >= 50 && c.adx < 75) color = '#2563eb'; // 50-75 (Çok Güçlü)
+            else if (c.adx >= 75) color = '#1e3a8a'; // 75-100 (Aşırı Güçlü / Koyu Mavi)
+            return { time: c.time, value: c.adx, color: color };
+        }));
+        sAdx.createPriceLine({ price: 25, color: '#10B981', lineWidth: 2, lineStyle: 2, title: '25', axisLabelVisible: true });
+        
+        let sAdxArea = c4.addAreaSeries({ lineColor: 'transparent', topColor: 'rgba(239, 68, 68, 0.3)', bottomColor: 'rgba(239, 68, 68, 0.05)' });
+        sAdxArea.setData(data.candles.map(c => c.adx != null ? {time: c.time, value: c.plus_di > c.minus_di ? c.adx : 0} : {time: c.time}));
+
+        // PANE 5: Momentum
+        c5.priceScale('right').applyOptions({ visible: true, scaleMargins: { top: 0.1, bottom: 0.1 } });
+        let sMom = c5.addHistogramSeries({ priceScaleId: 'right', base: 0 });
+        sMom.setData(data.candles.map(c => c.momentum != null ? {
+            time: c.time, 
+            value: c.momentum, 
+            color: c.momentum >= 0 ? 'rgba(16, 185, 129, 0.6)' : 'rgba(239, 68, 68, 0.6)'
+        } : {time: c.time}));
+        
+        // PANE 6: BB %B & ATR
+        c6.priceScale('right').applyOptions({ scaleMargins: { top: 0.1, bottom: 0.1 } });
+        c6.priceScale('left').applyOptions({ visible: true, scaleMargins: { top: 0.1, bottom: 0.1 } });
+        
+        let sBb = c6.addBaselineSeries({ 
+            baseValue: { type: 'price', price: 0.5 }, 
+            topLineColor: '#10B981', 
+            topFillColor1: 'rgba(16, 185, 129, 0.4)', 
+            topFillColor2: 'rgba(16, 185, 129, 0.05)', 
+            bottomLineColor: '#EF4444', 
+            bottomFillColor1: 'rgba(239, 68, 68, 0.05)', 
+            bottomFillColor2: 'rgba(239, 68, 68, 0.4)', 
+            lineWidth: 2 
+        });
+        sBb.setData(data.candles.map(c => c.bb_pb != null ? {time: c.time, value: c.bb_pb} : {time: c.time}));
+        
+        let sAtr = c6.addLineSeries({ priceScaleId: 'left', color: '#8b5cf6', lineWidth: 1.5 });
+        sAtr.setData(data.candles.map(c => c.atr != null ? {time: c.time, value: c.atr} : {time: c.time}));
+        
+        // Sync TimeScale using LogicalRange to avoid zooming feedback loops at the edges
+        const charts = [c1, c2, c3, c4, c5, c6];
+        let isSyncing = false;
+        charts.forEach(source => {
+            source.timeScale().subscribeVisibleLogicalRangeChange(range => {
+                if (isSyncing || !range) return;
+                isSyncing = true;
+                charts.forEach(target => {
+                    if (source !== target) target.timeScale().setVisibleLogicalRange(range);
+                });
+                isSyncing = false;
+            });
+        });
+        // Crosshair Sync & Tooltip Logic
+        const tooltip = document.getElementById('chart-tooltip');
+        const ttDate = document.getElementById('tt-date');
+        const ttO = document.getElementById('tt-o');
+        const ttH = document.getElementById('tt-h');
+        const ttL = document.getElementById('tt-l');
+        const ttC = document.getElementById('tt-c');
+        const ttVol = document.getElementById('tt-vol');
+        
+        const syncCrosshair = (param, sourceChart) => {
+            if (!param.time || param.point.x < 0 || param.point.y < 0) {
+                tooltip.style.display = 'none';
+                charts.forEach(c => { if (c !== sourceChart) c.clearCrosshairPosition(); });
+                return;
+            }
+            
+            // 1. Sync Crosshairs
+            charts.forEach(c => {
+                if (c !== sourceChart) {
+                    // Try to set crosshair on the first series of the target chart to get vertical line
+                    let targetSeries = null;
+                    if (c === c1) targetSeries = sCandle;
+                    else if (c === c2) targetSeries = sMacd;
+                    else if (c === c3) targetSeries = sRsi;
+                    else if (c === c4) targetSeries = sAdx;
+                    else if (c === c5) targetSeries = sMom;
+                    else if (c === c6) targetSeries = sBb;
+                    
+                    if (targetSeries) {
+                        let crosshairPrice = 0;
+                        // Find the matching data point to use its real price so we don't break auto-scaling
+                        const pointData = data.candles.find(d => d.time === param.time);
+                        if (pointData) {
+                            if (c === c1) crosshairPrice = pointData.close;
+                            else if (c === c2) crosshairPrice = pointData.macd || 0;
+                            else if (c === c3) crosshairPrice = pointData.rsi || 50;
+                            else if (c === c4) crosshairPrice = pointData.adx || 20;
+                            else if (c === c5) crosshairPrice = pointData.momentum || 0;
+                            else if (c === c6) crosshairPrice = pointData.bb_pb || 0.5;
+                        }
+                        c.setCrosshairPosition(crosshairPrice, param.time, targetSeries);
+                    }
+                }
+            });
+            
+            // 2. Update Tooltip
+            tooltip.style.display = 'block';
+            
+            // Try to find candle data for this time
+            const candleData = param.seriesData.get(sCandle);
+            if (candleData && candleData.open !== undefined) {
+                let dateStr = "";
+                if (typeof param.time === 'string') {
+                    dateStr = param.time;
+                } else {
+                    const dt = new Date(param.time * 1000);
+                    dateStr = dt.toLocaleString('tr-TR');
+                }
+                ttDate.textContent = dateStr;
+                ttO.textContent = candleData.open.toFixed(2);
+                ttH.textContent = candleData.high.toFixed(2);
+                ttL.textContent = candleData.low.toFixed(2);
+                ttC.textContent = candleData.close.toFixed(2);
+                
+                // Color formatting
+                ttC.style.color = candleData.close >= candleData.open ? '#10b981' : '#ef4444';
+            }
+            
+            const volData = param.seriesData.get(sVol);
+            if (volData) {
+                ttVol.textContent = 'Hacim: ' + (volData.value / 1000000).toFixed(2) + 'M';
+            }
+        };
+
+        charts.forEach(c => {
+            c.subscribeCrosshairMove(param => syncCrosshair(param, c));
+        });
+
+        // Save to global state
+        window.globalCharts = charts;
+        window.globalChartData = data.candles;
+        window.globalSeries = {
+            pane1: { sEma8, sEma21 },
+            pane2: { sMacd, sMacdSig, sMacdHist },
+            pane3: { sRsi },
+            pane4: { sAdx, sAdxArea },
+            pane5: { sMom },
+            pane6: { sBb, sAtr }
+        };
+        
+        // Settings Modal Handlers
+        [div1, div2, div3, div4, div5, div6].forEach((div, index) => {
+            div.addEventListener('dblclick', (e) => {
+                e.preventDefault();
+                openIndicatorSettings(`pane${index + 1}`);
+            });
+        });
+        
+    } catch (err) {
+        console.error(err);
+        tvContainer.innerHTML = `<div style="color:red; padding:20px; text-align:center;">Bir hata oluştu: ${err.message}</div>`;
     }
-    currentChartData = ohlcData;
+} // <--- Added missing brace for renderAdvancedChart
+
+function loadCustomChart(sym) {
+    window.currentChartSymbol = sym;
+    window.currentChartInterval = '1d';
+    document.querySelectorAll('.tf-btn').forEach(btn => btn.classList.remove('active'));
+    const btn = Array.from(document.querySelectorAll('.tf-btn')).find(b => b.getAttribute('onclick') === "changeChartInterval('1d')");
+    if(btn) btn.classList.add('active');
+    
     window.renderAdvancedChart();
+}
+
+// ========== DYNAMIC CHART SETTINGS ==========
+function openIndicatorSettings(paneId) {
+    const seriesMap = window.globalSeries[paneId];
+    if (!seriesMap) return;
+    
+    const modal = document.getElementById('indicator-modal');
+    const list = document.getElementById('modal-indicators-list');
+    list.innerHTML = ''; // clear
+    
+    Object.keys(seriesMap).forEach(key => {
+        const ser = seriesMap[key];
+        const row = document.createElement('div');
+        row.style.display = 'flex';
+        row.style.alignItems = 'center';
+        row.style.gap = '10px';
+        row.style.background = 'rgba(0,0,0,0.2)';
+        row.style.padding = '8px';
+        row.style.borderRadius = '4px';
+        
+        row.innerHTML = `
+            <div style="flex:1; color:#94a3b8; font-weight:bold; font-size:0.9rem;">${key}</div>
+            <input type="color" id="col-${key}" value="#3b82f6" style="width:30px; height:30px; border:none; cursor:pointer; background:transparent;">
+            <input type="range" id="opc-${key}" min="0.1" max="1" step="0.1" value="1" style="width:70px;">
+            <input type="number" id="wid-${key}" min="1" max="5" value="1" style="width:40px; background:#0f172a; color:#fff; border:1px solid #334155;">
+            <button onclick="updateIndicatorStyle('${paneId}', '${key}')" style="background:var(--accent-blue); color:#fff; border:none; padding:4px 8px; border-radius:4px; cursor:pointer; font-size:0.8rem;">Uygula</button>
+        `;
+        list.appendChild(row);
+    });
+    
+    modal.style.display = 'block';
+}
+
+window.updateIndicatorStyle = function(paneId, seriesKey) {
+    const ser = window.globalSeries[paneId][seriesKey];
+    if (!ser) return;
+    
+    const hex = document.getElementById(`col-${seriesKey}`).value;
+    const opacity = document.getElementById(`opc-${seriesKey}`).value;
+    const width = parseInt(document.getElementById(`wid-${seriesKey}`).value);
+    
+    let r = parseInt(hex.slice(1, 3), 16),
+        g = parseInt(hex.slice(3, 5), 16),
+        b = parseInt(hex.slice(5, 7), 16);
+    const rgba = `rgba(${r}, ${g}, ${b}, ${opacity})`;
+    
+    try {
+        ser.applyOptions({
+            color: rgba,
+            lineColor: rgba,
+            topColor: rgba,
+            bottomColor: `rgba(${r}, ${g}, ${b}, 0.05)`,
+            lineWidth: width
+        });
+    } catch(e) {
+        console.error("Could not apply styles to", seriesKey, e);
+    }
 }
 
 function bindDataToDashboard(report) {
@@ -616,6 +964,30 @@ function bindDataToDashboard(report) {
 
     setElText('exec-sum', safeGet(report, "Section_1_Executive"));
 
+    setElText('ai-narrative', safeGet(report, "Section_34_AINarrative", "Analiz bulunamadı."));
+    
+    // Bind Historical News
+    const historicalNews = safeGet(report, "Section_33_HistoricalNews", []);
+    const newsContainer = document.getElementById('historical-news-container');
+    if (newsContainer) {
+        newsContainer.innerHTML = '';
+        if (historicalNews && historicalNews.length > 0) {
+            historicalNews.forEach(news => {
+                let sentColor = "var(--text-muted)";
+                if (news.sentiment > 0.3) sentColor = "var(--accent-green)";
+                else if (news.sentiment < -0.3) sentColor = "var(--accent-red)";
+                
+                newsContainer.innerHTML += `
+                    <div style="border-bottom:1px solid rgba(255,255,255,0.05); padding-bottom:10px; margin-bottom:10px;">
+                        <div style="font-size:0.75rem; color:var(--text-muted); margin-bottom:5px;">${news.published} | ${news.publisher} <span style="float:right; color:${sentColor}">● Duygu Skoru: ${news.sentiment.toFixed(2)}</span></div>
+                        <a href="${news.url}" target="_blank" style="color:var(--text-main); font-weight:600; text-decoration:none; font-size:0.9rem;">${news.title}</a>
+                    </div>
+                `;
+            });
+        } else {
+            newsContainer.innerHTML = '<div class="text-muted text-center py-3">Geçmiş haber verisi bulunamadı.</div>';
+        }
+    }
     // Operational Data
     setElText('op-pyramid', safeGet(report, "Section_20_CIO_Executive_Summary.Pyramiding", "-"));
     setElText('op-short', safeGet(report, "Section_20_CIO_Executive_Summary.Short_Term_Advice", "-"));
@@ -1028,6 +1400,14 @@ let globalDashboardData = {};
 let dashboardPollInterval = null;
 
 window.onload = function() {
+    const urlParams = new URLSearchParams(window.location.search);
+    const sym = urlParams.get('symbol');
+    const tab = urlParams.get('tab');
+    if (sym && tab === 'graphic') {
+        document.getElementById('symbol-input').value = sym;
+        analyzeSymbol();
+    }
+    
     fetchDashboardData();
     // Her 5 saniyede bir arka plandaki scanner'in bitip bitmediğini kontrol et
     dashboardPollInterval = setInterval(fetchDashboardData, 5000);
@@ -1041,23 +1421,29 @@ async function fetchDashboardData() {
         if (data.status === 'success') {
             setElText('total-analyzed-counter', `RADAR BUGÜNE KADAR ${data.total_analyzed} VERİYİ ANALİZ ETTİ`);
             
-            // Eğer veri doluysa, hızlı yoklamayı durdur ve 1 dakikada bir güncelle
+            console.log('[DASHBOARD] API cevabı geldi. Keys:', Object.keys(data.dashboard_data || {}), 
+                'opp1h:', (data.dashboard_data?.opportunities_1h || []).length,
+                'opp:', (data.dashboard_data?.opportunities || []).length);
+            
+            // Eğer veri doluysa tabloları doldur
             if (data.dashboard_data && Object.keys(data.dashboard_data).length > 0) {
                 globalDashboardData = data.dashboard_data;
+                
+                // Render all categories
+                renderAllDashboardTables();
+                
                 if (dashboardPollInterval) {
                     clearInterval(dashboardPollInterval);
                     dashboardPollInterval = null;
                     // Arka plandaki 15 dk'lık güncellemeleri yakalamak için 1 dakikada bir kontrol et
                     setInterval(fetchDashboardData, 60000);
                 }
-                
-                // Render all categories simultaneously
-                renderAllDashboardTables();
             } else {
+                console.log('[DASHBOARD] Veri henüz boş, tarama devam ediyor...');
                 // Hâlâ boşsa kullanıcıyı bilgilendir
-                ["tb-opportunities", "tb-gainers", "tb-losers", "tb-favorites", "tb-high_volume", "tb-low_volume"].forEach(id => {
+                ["tb-opportunities-1h", "tb-opportunities", "tb-gainers", "tb-losers", "tb-favorites", "tb-high_volume", "tb-low_volume"].forEach(id => {
                     const tbody = document.getElementById(id);
-                    if (tbody && tbody.innerText.includes("Taranıyor")) {
+                    if (tbody && (tbody.innerText.includes("Taran") || tbody.innerHTML.includes("Taran"))) {
                         tbody.innerHTML = `<tr><td colspan="5" style="text-align: center;" class="text-muted"><div class="spinner small" style="display:inline-block; margin-right:10px;"></div> Tarama devam ediyor...</td></tr>`;
                     }
                 });
@@ -1081,8 +1467,14 @@ function updateLiveClock() {
     }
 }
 
+function openGraphicTab(symbol) {
+    document.getElementById('symbol-input').value = symbol;
+    analyzeSymbol();
+}
+
 function renderAllDashboardTables() {
     const cats = {
+        'opportunities_1h': 'tb-opportunities-1h',
         'opportunities': 'tb-opportunities',
         'gainers': 'tb-gainers',
         'losers': 'tb-losers',
@@ -1102,10 +1494,10 @@ function renderAllDashboardTables() {
         }
 
         tbody.innerHTML = '';
-        // Only show top 5 in each to save space on grid
-        const displayItems = items.slice(0, 5);
+        // 10'a kadar hisse göster
+        const displayItems = items.slice(0, 10);
         let timeStr = new Date().toLocaleTimeString('tr-TR', {hour: '2-digit', minute: '2-digit'});
-        const headerTimeSpan = document.getElementById('time-' + cat);
+        const headerTimeSpan = document.getElementById('time-' + (cat === 'opportunities_1h' ? 'opportunities-1h' : cat));
         if (headerTimeSpan) {
             headerTimeSpan.innerText = "(Güncelleme: " + timeStr + ")";
         }
@@ -1113,13 +1505,9 @@ function renderAllDashboardTables() {
         displayItems.forEach(res => {
             let tr = document.createElement('tr');
             
-            let scoreValue = res.Score !== undefined ? res.Score : 0;
-            let scoreColor = scoreValue >= 70 ? 'var(--accent-green)' : (scoreValue >= 50 ? 'var(--accent-yellow)' : 'var(--accent-red)');
-            
             let priceStr = res.Price ? "₺" + parseFloat(res.Price).toFixed(2) : "-";
             
-            // Fiyatın yanına Günlük Değişim (%) ekle (Yükselenler ve Düşenler tablosunda 4. sütunda zaten olduğu için oraya ekleme)
-            if (res.Change_Pct !== undefined && cat !== 'gainers' && cat !== 'losers') {
+            if (res.Change_Pct !== undefined && cat !== 'gainers' && cat !== 'losers' && cat !== 'opportunities_1h') {
                 let p_pct = parseFloat(res.Change_Pct);
                 let p_c = p_pct > 0 ? "var(--accent-green)" : (p_pct < 0 ? "var(--accent-red)" : "var(--text-muted)");
                 let p_sign = p_pct > 0 ? "+" : "";
@@ -1127,30 +1515,77 @@ function renderAllDashboardTables() {
             }
 
             let statusStr = "";
-            if (cat === 'gainers' || cat === 'losers') {
-                let pct = res.Change_Pct ? parseFloat(res.Change_Pct) : 0;
-                let c = pct > 0 ? "var(--accent-green)" : "var(--accent-red)";
-                let sign = pct > 0 ? "+" : (pct < 0 ? "-" : "");
-                statusStr = `<span style="color:${c}; font-weight:bold;">${sign}%${Math.abs(pct).toFixed(2)}</span>`;
-            } else if (cat === 'high_volume' || cat === 'low_volume') {
-                let mv = res.Money_Volume ? parseFloat(res.Money_Volume) : 0;
-                let mStr = mv > 1000000 ? (mv / 1000000).toFixed(1) + "M ₺" : mv.toFixed(0) + " ₺";
-                statusStr = `<span style="color:var(--text-muted);">${mStr}</span>`;
+            let scoreContent = "";
+
+            if (cat === 'opportunities_1h') {
+                let s5 = res.Score_5 !== undefined ? res.Score_5 : 0;
+                let sColor = s5 === 5 ? 'var(--accent-green)' : (s5 >= 4 ? 'var(--accent-blue)' : 'var(--accent-yellow)');
+                scoreContent = `<span style="color:${sColor};font-weight:700;">${s5} / 5</span>`;
+                
+                statusStr = `<span style="font-size:0.75rem; color:var(--text-muted);">ADX:${res.ADX_Val} RSI:${res.RSI_Val}</span>`;
             } else {
-                statusStr = `<span style="color:var(--accent-green)">AL</span>`;
+                let scoreValue = res.Score !== undefined ? res.Score : 0;
+                let scoreColor = scoreValue >= 70 ? 'var(--accent-green)' : (scoreValue >= 50 ? 'var(--accent-yellow)' : 'var(--accent-red)');
+                scoreContent = `<span style="color:${scoreColor};font-weight:700;">${scoreValue}</span>`;
+
+                if (cat === 'gainers' || cat === 'losers') {
+                    let pct = res.Change_Pct ? parseFloat(res.Change_Pct) : 0;
+                    let c = pct > 0 ? "var(--accent-green)" : "var(--accent-red)";
+                    let sign = pct > 0 ? "+" : (pct < 0 ? "-" : "");
+                    statusStr = `<span style="color:${c}; font-weight:bold;">${sign}%${Math.abs(pct).toFixed(2)}</span>`;
+                } else if (cat === 'high_volume' || cat === 'low_volume') {
+                    let mv = res.Money_Volume ? parseFloat(res.Money_Volume) : 0;
+                    let mStr = mv > 1000000 ? (mv / 1000000).toFixed(1) + "M ₺" : mv.toFixed(0) + " ₺";
+                    statusStr = `<span style="color:var(--text-muted);">${mStr}</span>`;
+                } else {
+                    statusStr = `<span style="color:var(--accent-green)">AL</span>`;
+                }
             }
             
             tr.innerHTML = `
                 <td style="color:var(--text-main);font-weight:700;">${res.Symbol}</td>
                 <td style="font-family:monospace; font-weight:600;">${priceStr}</td>
-                <td style="color:${scoreColor};font-weight:700;">${scoreValue}</td>
+                <td>${scoreContent}</td>
                 <td>${statusStr}</td>
                 <td>
-                    <button class="btn-primary" style="padding:0.25rem 0.5rem; font-size:0.75rem;" onclick="document.getElementById('symbol-input').value='${res.Symbol}'; analyzeSymbol();">İncele</button>
+                    <a href="/?symbol=${res.Symbol}&tab=graphic" target="_blank" class="btn btn-primary" style="padding:0.25rem 0.5rem; font-size:0.75rem; text-decoration:none; color:white; display:inline-block;" onclick="event.preventDefault(); document.getElementById('symbol-input').value='${res.Symbol}'; analyzeSymbol();">İncele</a>
                 </td>
             `;
             tbody.appendChild(tr);
         });
+    }
+    
+    // Ayrıca Radar Sayfasındaki 1 Saatlik Fırsatlar tablosunu da güncelle
+    const opp1hTbody = document.getElementById('opp1h-tbody');
+    if (opp1hTbody) {
+        const opp1hItems = globalDashboardData['opportunities_1h'] || [];
+        if (opp1hItems.length === 0) {
+            opp1hTbody.innerHTML = `<tr><td colspan="5" style="text-align: center;" class="text-muted">Bu kategoride sonuç bulunamadı.</td></tr>`;
+        } else {
+            opp1hTbody.innerHTML = '';
+            opp1hItems.forEach(res => {
+                let tr = document.createElement('tr');
+                let s5 = res.Score_5 !== undefined ? res.Score_5 : 0;
+                let sColor = s5 === 5 ? 'var(--accent-green)' : (s5 >= 4 ? 'var(--accent-blue)' : 'var(--accent-yellow)');
+                let priceStr = res.Price ? "₺" + parseFloat(res.Price).toFixed(2) : "-";
+                
+                let details = [];
+                if (res.EMA_Match) details.push("<span style='color:#3b82f6'>EMA Kesişimi</span>");
+                if (res.MACD_Match) details.push("<span style='color:#f59e0b'>MACD AL</span>");
+                if (res.RSI_Match) details.push("<span style='color:#10b981'>RSI>50</span>");
+                if (res.ADX_Match) details.push("<span style='color:#8b5cf6'>Güçlü Trend</span>");
+                if (res.MOM_Match) details.push("<span style='color:#22c55e'>Momentum+</span>");
+                
+                tr.innerHTML = `
+                    <td style="color:var(--text-main);font-weight:700;font-size:1.1rem;">${res.Symbol}</td>
+                    <td style="font-family:monospace; font-weight:600;font-size:1.1rem;">${priceStr}</td>
+                    <td style="color:${sColor};font-weight:700;font-size:1.1rem;">${s5} / 5</td>
+                    <td style="font-size:0.85rem; line-height:1.4;">${details.join('<br>')}</td>
+                    <td><a href="/?symbol=${res.Symbol}&tab=graphic" target="_blank" class="btn btn-sm btn-outline-primary" style="text-decoration:none;" onclick="event.preventDefault(); openGraphicTab('${res.Symbol}'); switchMainTab('home', document.querySelector('.nav-btn.active'));">Grafikte Aç</a></td>
+                `;
+                opp1hTbody.appendChild(tr);
+            });
+        }
     }
 }
 
