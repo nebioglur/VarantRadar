@@ -166,3 +166,289 @@ class TechnicalEngine(BaseEngine):
             
         self.validate_output(result)
         return result
+
+    def analyze_1h_opportunities(self, symbol: str, data: Any = None) -> Dict[str, Any]:
+        """
+        1 Saatlik (1h) veriler üzerinde kullanıcının grafikte gördüğü spesifik indikatörlere (EMA 8/21, MACD, RSI, ADX, Momentum)
+        dayalı 'Fırsat' analizi yapar. Fırsat şartlarının kaç tanesinin sağlandığını hesaplar.
+        """
+        if data is None or not isinstance(data, pd.DataFrame) or data.empty or len(data) < 20:
+            return None
+            
+        df = data.copy()
+        
+        # Standardize columns if necessary
+        close_col = 'close' if 'close' in df.columns else 'Close'
+        high_col = 'high' if 'high' in df.columns else 'High'
+        low_col = 'low' if 'low' in df.columns else 'Low'
+        
+        try:
+            import numpy as np
+            
+            close = df[close_col]
+            high = df[high_col]
+            low = df[low_col]
+            
+            # EMA
+            ema8 = close.ewm(span=8, adjust=False).mean()
+            ema21 = close.ewm(span=21, adjust=False).mean()
+            
+            # MACD
+            ema12 = close.ewm(span=12, adjust=False).mean()
+            ema26 = close.ewm(span=26, adjust=False).mean()
+            macd = ema12 - ema26
+            macd_signal = macd.ewm(span=9, adjust=False).mean()
+            
+            # RSI
+            delta = close.diff()
+            gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+            loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+            rs = gain / loss.replace(0, np.nan)
+            rsi = 100 - (100 / (1 + rs))
+            
+            # ADX
+            up = high.diff()
+            down = low.shift(1) - low
+            plus_dm = pd.Series(np.where((up > down) & (up > 0), up, 0.0), index=df.index)
+            minus_dm = pd.Series(np.where((down > up) & (down > 0), down, 0.0), index=df.index)
+            
+            tr1 = high - low
+            tr2 = (high - close.shift(1)).abs()
+            tr3 = (low - close.shift(1)).abs()
+            tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+            
+            atr = tr.ewm(alpha=1/14, adjust=False).mean()
+            plus_di = 100 * (plus_dm.ewm(alpha=1/14, adjust=False).mean() / atr)
+            minus_di = 100 * (minus_dm.ewm(alpha=1/14, adjust=False).mean() / atr)
+            dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, np.nan)
+            adx = dx.ewm(alpha=1/14, adjust=False).mean()
+            
+            # Momentum
+            momentum = close - close.shift(10)
+            
+            # Current Values
+            c_ema8 = float(ema8.iloc[-1])
+            c_ema21 = float(ema21.iloc[-1])
+            c_macd = float(macd.iloc[-1])
+            c_macd_sig = float(macd_signal.iloc[-1])
+            c_rsi = float(rsi.iloc[-1])
+            c_adx = float(adx.iloc[-1])
+            c_plus_di = float(plus_di.iloc[-1])
+            c_minus_di = float(minus_di.iloc[-1])
+            c_mom = float(momentum.iloc[-1])
+            
+            # Match Conditions
+            cond_ema = c_ema8 > c_ema21
+            cond_macd = c_macd > c_macd_sig
+            cond_rsi = c_rsi > 50
+            cond_adx = c_adx > 20 and c_plus_di > c_minus_di
+            cond_mom = c_mom > 0
+            
+            score_out_of_5 = sum([cond_ema, cond_macd, cond_rsi, cond_adx, cond_mom])
+            
+            if score_out_of_5 >= 1:
+                return {
+                    "Symbol": symbol,
+                    "Score_5": score_out_of_5,
+                    "Price": round(float(close.iloc[-1]), 2),
+                    "EMA_Match": cond_ema,
+                    "MACD_Match": cond_macd,
+                    "RSI_Match": cond_rsi,
+                    "ADX_Match": cond_adx,
+                    "MOM_Match": cond_mom,
+                    "RSI_Val": round(c_rsi, 1),
+                    "ADX_Val": round(c_adx, 1)
+                }
+            return None
+            
+        except Exception as e:
+            print(f"[TechnicalEngine 1H] Hata ({symbol}): {e}")
+            return None
+
+
+    @classmethod
+    def get_chart_data(cls, symbol: str, interval: str = '1d') -> Dict[str, Any]:
+        import yfinance as yf
+        import numpy as np
+        period_map = {'5m': '5d', '15m': '5d', '1h': '1mo', '4h': '1mo', '1d': '1y', '1wk': '2y', '1mo': '5y'}
+        period = period_map.get(interval, '1y')
+        df = yf.Ticker(symbol).history(period=period, interval=interval)
+        if df.empty:
+            return {"status": "error", "message": "No data found"}
+            
+        close = df['Close']
+        high = df['High']
+        low = df['Low']
+        
+        df['EMA8'] = close.ewm(span=8, adjust=False).mean()
+        df['EMA21'] = close.ewm(span=21, adjust=False).mean()
+        
+        ema12 = close.ewm(span=12, adjust=False).mean()
+        ema26 = close.ewm(span=26, adjust=False).mean()
+        macd = ema12 - ema26
+        macd_signal = macd.ewm(span=9, adjust=False).mean()
+        df['MACD'] = macd
+        df['MACD_Signal'] = macd_signal
+        df['MACD_Hist'] = macd - macd_signal
+        
+        up = high.diff()
+        down = low.shift(1) - low
+        plus_dm = pd.Series(np.where((up > down) & (up > 0), up, 0.0), index=df.index)
+        minus_dm = pd.Series(np.where((down > up) & (down > 0), down, 0.0), index=df.index)
+        
+        tr1 = high - low
+        tr2 = (high - close.shift(1)).abs()
+        tr3 = (low - close.shift(1)).abs()
+        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+        
+        atr = tr.ewm(alpha=1/14, adjust=False).mean()
+        plus_di = 100 * (plus_dm.ewm(alpha=1/14, adjust=False).mean() / atr)
+        minus_di = 100 * (minus_dm.ewm(alpha=1/14, adjust=False).mean() / atr)
+        dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, np.nan)
+        adx = dx.ewm(alpha=1/14, adjust=False).mean()
+        
+        df['ADX'] = adx
+        df['PLUS_DI'] = plus_di
+        df['MINUS_DI'] = minus_di
+        
+        delta = close.diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+        rs = gain / loss.replace(0, np.nan)
+        df['RSI'] = 100 - (100 / (1 + rs))
+        
+        df['Momentum'] = close - close.shift(10)
+        
+        roll_mean = close.rolling(20).mean()
+        roll_std = close.rolling(20).std(ddof=0)
+        upper_band = roll_mean + (roll_std * 2)
+        lower_band = roll_mean - (roll_std * 2)
+        df['BB_P_B'] = (close - lower_band) / (upper_band - lower_band).replace(0, np.nan)
+        
+        df['ATR'] = atr
+        
+        # --- Custom SuperTrend Calculation ---
+        st_period = 10
+        st_multiplier = 3.0
+        st_atr = tr.ewm(alpha=1/st_period, adjust=False).mean()
+        
+        hl2 = (high + low) / 2
+        basic_ub = hl2 + (st_multiplier * st_atr)
+        basic_lb = hl2 - (st_multiplier * st_atr)
+        
+        c = close.to_numpy()
+        b_ub = basic_ub.to_numpy()
+        b_lb = basic_lb.to_numpy()
+        
+        n = len(c)
+        f_ub = np.zeros(n)
+        f_lb = np.zeros(n)
+        st = np.zeros(n)
+        st_dir = np.ones(n) # 1 for up, -1 for down
+        
+        if n > 0:
+            f_ub[0] = b_ub[0]
+            f_lb[0] = b_lb[0]
+            st[0] = b_lb[0]
+            
+            for i in range(1, n):
+                if b_ub[i] < f_ub[i-1] or c[i-1] > f_ub[i-1]:
+                    f_ub[i] = b_ub[i]
+                else:
+                    f_ub[i] = f_ub[i-1]
+                    
+                if b_lb[i] > f_lb[i-1] or c[i-1] < f_lb[i-1]:
+                    f_lb[i] = b_lb[i]
+                else:
+                    f_lb[i] = f_lb[i-1]
+                    
+                if st_dir[i-1] == 1 and c[i] <= f_lb[i]:
+                    st_dir[i] = -1
+                elif st_dir[i-1] == -1 and c[i] >= f_ub[i]:
+                    st_dir[i] = 1
+                else:
+                    st_dir[i] = st_dir[i-1]
+                    
+                if st_dir[i] == 1:
+                    st[i] = f_lb[i]
+                else:
+                    st[i] = f_ub[i]
+                    
+        df['SuperTrend'] = st
+        df['SuperTrend_Dir'] = st_dir
+        # --- End Custom SuperTrend ---
+        
+        annotations = []
+        for i in range(1, len(df)):
+            idx_time = int(df.index[i].timestamp())
+            
+            # 1. EMA Crossover
+            if pd.notna(df['EMA8'].iloc[i]) and pd.notna(df['EMA21'].iloc[i]):
+                if df['EMA8'].iloc[i-1] <= df['EMA21'].iloc[i-1] and df['EMA8'].iloc[i] > df['EMA21'].iloc[i]:
+                    annotations.append({"time": idx_time, "position": "belowBar", "color": "#10b981", "shape": "arrowUp", "text": "EMA AL", "type": "ema"})
+                elif df['EMA8'].iloc[i-1] >= df['EMA21'].iloc[i-1] and df['EMA8'].iloc[i] < df['EMA21'].iloc[i]:
+                    annotations.append({"time": idx_time, "position": "aboveBar", "color": "#ef4444", "shape": "arrowDown", "text": "EMA SAT", "type": "ema"})
+                    
+            # 2. MACD Crossover
+            if pd.notna(df['MACD'].iloc[i]) and pd.notna(df['MACD_Signal'].iloc[i]):
+                if df['MACD'].iloc[i-1] <= df['MACD_Signal'].iloc[i-1] and df['MACD'].iloc[i] > df['MACD_Signal'].iloc[i]:
+                    annotations.append({"time": idx_time, "position": "belowBar", "color": "#3b82f6", "shape": "arrowUp", "text": "MACD AL", "type": "macd"})
+                elif df['MACD'].iloc[i-1] >= df['MACD_Signal'].iloc[i-1] and df['MACD'].iloc[i] < df['MACD_Signal'].iloc[i]:
+                    annotations.append({"time": idx_time, "position": "aboveBar", "color": "#f59e0b", "shape": "arrowDown", "text": "MACD SAT", "type": "macd"})
+                    
+            # 3. ADX Zone
+            if pd.notna(df['ADX'].iloc[i]) and pd.notna(df['PLUS_DI'].iloc[i]):
+                if df['ADX'].iloc[i] > 20 and df['PLUS_DI'].iloc[i] > df['MINUS_DI'].iloc[i] and df['ADX'].iloc[i] > df['ADX'].iloc[i-1]:
+                    if df['ADX'].iloc[i-1] <= 20 or df['PLUS_DI'].iloc[i-1] <= df['MINUS_DI'].iloc[i-1]:
+                        annotations.append({"time": idx_time, "position": "belowBar", "color": "#eab308", "shape": "arrowUp", "text": "Güçlü Trend", "type": "adx"})
+                        
+        candles = []
+        for idx, row in df.iterrows():
+            if interval in ['1d', '1wk', '1mo']:
+                time_val = idx.strftime('%Y-%m-%d')
+            else:
+                # BIST 1h bars in Yahoo Finance often incorrectly start at xx:30 (e.g. 09:30)
+                # Shift them to xx:00 (e.g. 10:00) to match exact market hours
+                if idx.minute == 30:
+                    idx = idx + pd.Timedelta(minutes=30)
+                time_val = int(idx.timestamp())
+                
+            candles.append({
+                "time": time_val,
+                "open": round(row['Open'], 2),
+                "high": round(row['High'], 2),
+                "low": round(row['Low'], 2),
+                "close": round(row['Close'], 2),
+                "volume": float(row['Volume']) if 'Volume' in row else 0,
+                "ema8": round(row['EMA8'], 2) if pd.notna(row['EMA8']) else None,
+                "ema21": round(row['EMA21'], 2) if pd.notna(row['EMA21']) else None,
+                "macd": round(row['MACD'], 2) if pd.notna(row['MACD']) else None,
+                "macd_signal": round(row['MACD_Signal'], 2) if pd.notna(row['MACD_Signal']) else None,
+                "macd_hist": round(row['MACD_Hist'], 2) if pd.notna(row['MACD_Hist']) else None,
+                "adx": round(row['ADX'], 2) if pd.notna(row['ADX']) else None,
+                "rsi": round(row['RSI'], 2) if pd.notna(row['RSI']) else None,
+                "momentum": round(row['Momentum'], 2) if pd.notna(row['Momentum']) else None,
+                "bb_pb": round(row['BB_P_B'], 3) if pd.notna(row['BB_P_B']) else None,
+                "atr": round(row['ATR'], 2) if pd.notna(row['ATR']) else None,
+                "supertrend": round(row['SuperTrend'], 2) if pd.notna(row['SuperTrend']) else None,
+                "supertrend_dir": int(row['SuperTrend_Dir']) if pd.notna(row['SuperTrend_Dir']) else None
+            })
+            
+        # Pivot Points (Macro levels based on the fetched period)
+        macro_high = df['High'].max()
+        macro_low = df['Low'].min()
+        macro_close = df['Close'].iloc[-1]
+        
+        p = (macro_high + macro_low + macro_close) / 3
+        pivots = {
+            "P": round(p, 2),
+            "R1": round((p * 2) - macro_low, 2),
+            "S1": round((p * 2) - macro_high, 2),
+            "R2": round(p + (macro_high - macro_low), 2),
+            "S2": round(p - (macro_high - macro_low), 2),
+            "R3": round(macro_high + 2 * (p - macro_low), 2),
+            "S3": round(macro_low - 2 * (macro_high - p), 2)
+        }
+            
+        return {"status": "success", "candles": candles, "annotations": annotations, "pivots": pivots}
+

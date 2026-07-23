@@ -99,13 +99,19 @@ class ProphetProjectionEngine:
             # --- GELECEK TAHMİNİ ---
             future_dates = m.make_future_dataframe(periods=steps, freq='h' if interval_type == '1h' else ('d' if interval_type == '1d' else 'W'))
             
-            # İş günleri / Saatleri Filtresi (İsteğe bağlı, ancak Prophet kendi de düzeltme yapar)
+            # İş günleri / Saatleri Filtresi
             if interval_type == '1d':
                 future_dates = future_dates[future_dates['ds'].dt.dayofweek < 5] # Hafta sonunu çıkar
                 if len(future_dates) < len(prophet_df) + steps:
-                    # Eksilen günler kadar fazladan üret
                     future_dates = m.make_future_dataframe(periods=steps * 2, freq='d')
                     future_dates = future_dates[future_dates['ds'].dt.dayofweek < 5]
+            elif interval_type == '1h':
+                future_dates = m.make_future_dataframe(periods=steps * 5, freq='h')
+                future_dates = future_dates[
+                    (future_dates['ds'].dt.dayofweek < 5) & 
+                    (future_dates['ds'].dt.hour >= 10) & 
+                    (future_dates['ds'].dt.hour <= 18)
+                ]
                     
             # Sadece geleceği almak için
             future_only = future_dates.iloc[len(prophet_df):].head(steps)

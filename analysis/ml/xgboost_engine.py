@@ -100,6 +100,11 @@ class XGBoostProjectionEngine:
                 
                 if interval_type == '1h':
                     current_dt = current_dt + pd.Timedelta(hours=1)
+                    if current_dt.hour > 18 or (current_dt.hour == 18 and current_dt.minute > 10):
+                        current_dt = current_dt + pd.Timedelta(days=1)
+                        current_dt = current_dt.replace(hour=10, minute=0)
+                    while current_dt.dayofweek >= 5: 
+                        current_dt = current_dt + pd.Timedelta(days=1)
                 elif interval_type == '1d':
                     current_dt = current_dt + pd.Timedelta(days=1)
                     while current_dt.dayofweek >= 5: 

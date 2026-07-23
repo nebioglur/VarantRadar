@@ -113,10 +113,11 @@ class SVRProjectionEngine:
             for i in range(1, steps + 1):
                 if interval_type == '1h':
                     current_time += datetime.timedelta(hours=1)
-                    if current_time.hour > 18:
-                        current_time += datetime.timedelta(hours=15)
-                    elif current_time.hour < 10:
-                        current_time = current_time.replace(hour=10)
+                    if current_time.hour > 18 or (current_time.hour == 18 and current_time.minute > 10):
+                        current_time += datetime.timedelta(days=1)
+                        current_time = current_time.replace(hour=10, minute=0)
+                    while current_time.weekday() >= 5:
+                        current_time += datetime.timedelta(days=1)
                 elif interval_type == '1wk':
                     current_time += datetime.timedelta(weeks=1)
                 else:

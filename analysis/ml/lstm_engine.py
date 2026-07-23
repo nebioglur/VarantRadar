@@ -3,6 +3,7 @@ import numpy as np
 from typing import Dict, Any
 from sklearn.metrics import r2_score, mean_squared_error
 from sklearn.preprocessing import MinMaxScaler
+from sklearn.neural_network import MLPRegressor
 import os
 
 class LSTMProjectionEngine:
@@ -18,7 +19,7 @@ class LSTMProjectionEngine:
             self.Dense = Dense
             self.Dropout = Dropout
         except ImportError:
-            print("[LSTM Engine] Hata: tensorflow kurulu değil.")
+            print("[LSTM Engine] Hata: tensorflow kurulu değil. MLPRegressor kullanılacak.")
             self.tf = None
 
     def _create_dataset(self, data: np.ndarray, time_step: int = 5):
@@ -29,7 +30,7 @@ class LSTMProjectionEngine:
         return np.array(X), np.array(Y)
 
     def generate_projections_real(self, df: pd.DataFrame, steps: int = 5, interval_type: str = '1d', current_price: float = None) -> Dict[str, Any]:
-        if df.empty or len(df) < steps * 3 or self.tf is None:
+        if df.empty or len(df) < steps * 3:
             return {"metrics": {"r2": 0, "rmse": 0}, "past_real": [], "past_predicted": [], "future_predicted": []}
             
         df = df.rename(columns=str.lower)
@@ -60,17 +61,24 @@ class LSTMProjectionEngine:
             return {"metrics": {"r2": 0, "rmse": 0}, "past_real": [], "past_predicted": [], "future_predicted": []}
             
         try:
-            model = self.Sequential()
-            model.add(self.LSTM(50, return_sequences=True, input_shape=(time_step, len(features))))
-            model.add(self.Dropout(0.1))
-            model.add(self.LSTM(50, return_sequences=False))
-            model.add(self.Dense(25))
-            model.add(self.Dense(1))
-            
-            model.compile(optimizer='adam', loss='mean_squared_error')
-            model.fit(X, y, batch_size=16, epochs=10, verbose=0)
-            
-            train_predict = model.predict(X, verbose=0)
+            if self.tf is not None:
+                model = self.Sequential()
+                model.add(self.LSTM(50, return_sequences=True, input_shape=(time_step, len(features))))
+                model.add(self.Dropout(0.1))
+                model.add(self.LSTM(50, return_sequences=False))
+                model.add(self.Dense(25))
+                model.add(self.Dense(1))
+                
+                model.compile(optimizer='adam', loss='mean_squared_error')
+                model.fit(X, y, batch_size=16, epochs=10, verbose=0)
+                
+                train_predict = model.predict(X, verbose=0)
+            else:
+                # MLPRegressor Fallback
+                X_2d = X.reshape(X.shape[0], X.shape[1] * X.shape[2])
+                model = MLPRegressor(hidden_layer_sizes=(50, 25), max_iter=200, random_state=42)
+                model.fit(X_2d, y)
+                train_predict = model.predict(X_2d).reshape(-1, 1)
             
             train_predict_unscaled = close_scaler.inverse_transform(train_predict).flatten()
             y_unscaled = close_scaler.inverse_transform(y.reshape(-1, 1)).flatten()
@@ -117,13 +125,23 @@ class LSTMProjectionEngine:
             last_close = current_price if current_price else train_predict_unscaled[-1]
             
             for step in range(steps):
-                next_pred_scaled = model.predict(curr_input, verbose=0)[0][0]
+                if self.tf is not None:
+                    next_pred_scaled = model.predict(curr_input, verbose=0)[0][0]
+                else:
+                    curr_input_2d = curr_input.reshape(1, time_step * len(features))
+                    next_pred_scaled = model.predict(curr_input_2d)[0]
+                    
                 next_pred_unscaled = close_scaler.inverse_transform([[next_pred_scaled]])[0][0]
                 
                 next_pred_shifted = next_pred_unscaled + shift
                 
                 if interval_type == '1h':
                     current_dt = current_dt + pd.Timedelta(hours=1)
+                    if current_dt.hour > 18 or (current_dt.hour == 18 and current_dt.minute > 10):
+                        current_dt = current_dt + pd.Timedelta(days=1)
+                        current_dt = current_dt.replace(hour=10, minute=0)
+                    while current_dt.dayofweek >= 5: 
+                        current_dt = current_dt + pd.Timedelta(days=1)
                 elif interval_type == '1d':
                     current_dt = current_dt + pd.Timedelta(days=1)
                     while current_dt.dayofweek >= 5: 
