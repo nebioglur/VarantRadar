@@ -8,5 +8,7 @@ xgboost
 ta
 requests
 feedparser
+gnews
+textblob
 cryptography
 gunicorn
