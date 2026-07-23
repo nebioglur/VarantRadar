@@ -10,6 +10,8 @@ from validation.backtest import BacktestValidator
 from validation.monte_carlo import MonteCarloSimulator
 from learning.learning_engine import AILearningEngine
 from analysis.ml.lstm_engine import LSTMProjectionEngine
+from data.providers.news_engine import NewsEngine
+from decision.feedback_ai import GenerativeFeedbackEngine
 
 class ExecutiveDecisionEngine:
     """
@@ -206,6 +208,26 @@ class ExecutiveDecisionEngine:
             if prev_close > 0:
                 change_pct = ((current_price - prev_close) / prev_close) * 100
 
+        # --- V2.0: 6-Month News & AI Feedback ---
+        try:
+            news_engine = NewsEngine()
+            historical_news = news_engine.fetch_news(symbol)
+            avg_sentiment = 0.0
+            if historical_news:
+                avg_sentiment = sum(n.get("sentiment", 0.0) for n in historical_news) / len(historical_news)
+                
+            feedback_engine = GenerativeFeedbackEngine()
+            ai_narrative = feedback_engine.generate_feedback(
+                symbol=symbol,
+                technicals=technical_result.get("Indicators", {}),
+                predictions={},
+                news_sentiment=avg_sentiment,
+                confidence=confidence_score
+            )
+        except Exception as e:
+            historical_news = []
+            ai_narrative = f"Yapay Zeka Raporu oluşturulamadı: {e}"
+
         return {
             "META": {
                 "Symbol": symbol,
@@ -308,6 +330,7 @@ class ExecutiveDecisionEngine:
             "Section_26_SmartMoney": smart_money_deep_data,
             "Section_27_Fundamental": {
                 "P_E_Ratio": fundamental_result.get("P_E_Ratio", "N/A"),
+
                 "ROE": fundamental_result.get("ROE", "N/A"),
                 "Debt_to_Equity": fundamental_result.get("Debt_to_Equity", "N/A"),
                 "Score": fundamental_result.get("Score", 50.0),
@@ -338,5 +361,7 @@ class ExecutiveDecisionEngine:
                     "volume": float(row["volume"])
                 }
                 for idx, row in df.tail(90).iterrows()
-            ]
+            ],
+            "Section_33_HistoricalNews": historical_news,
+            "Section_34_AINarrative": ai_narrative
         }
