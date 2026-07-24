@@ -1,5 +1,6 @@
 import pandas as pd
 import numpy as np
+import math
 from typing import Dict, Any, Union
 from core.interfaces import BaseEngine
 
@@ -246,20 +247,87 @@ class TechnicalEngine(BaseEngine):
             
             score_out_of_5 = sum([cond_ema, cond_macd, cond_rsi, cond_adx, cond_mom])
             
-            if score_out_of_5 >= 1:
-                return {
-                    "Symbol": symbol,
-                    "Score_5": score_out_of_5,
-                    "Price": round(float(close.iloc[-1]), 2),
-                    "EMA_Match": cond_ema,
-                    "MACD_Match": cond_macd,
-                    "RSI_Match": cond_rsi,
-                    "ADX_Match": cond_adx,
-                    "MOM_Match": cond_mom,
-                    "RSI_Val": round(c_rsi, 1),
-                    "ADX_Val": round(c_adx, 1)
-                }
-            return None
+            # ============================================================
+            # 1 Saatlik Fırsat Özel Koşulları (Kullanıcı Kuralı):
+            # 1. EMA(8), EMA(21)'i YUKARI KESMİŞ OLACAK (crossover)
+            #    Yani önceki barlarda EMA8 <= EMA21 iken, şimdi EMA8 > EMA21
+            # 2. Bu kesişim SON 20 SAAT İÇİNDE gerçekleşmiş olacak
+            # 3. EMA(8) - EMA(21) >= Fiyatın Binde 2'si (%0.2)
+            # AMAÇ: Yeni kesişimleri yakalamak!
+            # ============================================================
+            
+            current_price = float(close.iloc[-1])
+            gap = c_ema8 - c_ema21
+            
+            # Koşul 1 & 2: Son 20 bar içinde crossover olmuş mu?
+            # EMA8 - EMA21 farkı serisi oluştur
+            ema_diff = ema8 - ema21
+            
+            # Son 21 bar (şimdiki + 20 önceki) içinde kesişim ara
+            # Kesişim = ema_diff'in negatiften pozitife geçtiği nokta
+            crossover_found = False
+            crossover_bars_ago = -1
+            lookback = min(21, len(ema_diff))
+            
+            for i in range(1, lookback):
+                idx_now = len(ema_diff) - i      # şimdiden geriye
+                idx_prev = idx_now - 1
+                if idx_prev >= 0:
+                    val_now = float(ema_diff.iloc[idx_now])
+                    val_prev = float(ema_diff.iloc[idx_prev])
+                    # Önceki barda EMA8 <= EMA21, bu barda EMA8 > EMA21
+                    if val_now > 0 and val_prev <= 0:
+                        crossover_found = True
+                        crossover_bars_ago = i
+                        break
+            
+            # Crossover yoksa → fırsat yok
+            if not crossover_found:
+                return None
+            
+            # Koşul 3: EMA farkı >= fiyatın binde 2'si (%0.2)
+            gap_pct = 0.0
+            if current_price > 0 and not math.isnan(current_price) and not math.isnan(gap):
+                gap_pct = (gap / current_price) * 100
+            
+            if math.isnan(gap_pct): gap_pct = 0.0
+            
+            if gap_pct < 0.2:
+                return None
+            
+            # Günlük Değişim % Hesabı
+            daily_change_pct = 0.0
+            if not df.empty and hasattr(df.index, 'date'):
+                try:
+                    current_date = df.index[-1].date()
+                    prev_days = df[df.index.date < current_date]
+                    if not prev_days.empty:
+                        prev_close = float(prev_days[close_col].iloc[-1])
+                        if prev_close > 0 and not math.isnan(prev_close) and not math.isnan(current_price):
+                            daily_change_pct = ((current_price - prev_close) / prev_close) * 100
+                except Exception:
+                    pass
+
+            if math.isnan(daily_change_pct): daily_change_pct = 0.0
+            if math.isnan(current_price): current_price = 0.0
+            if math.isnan(c_rsi): c_rsi = 0.0
+            if math.isnan(c_adx): c_adx = 0.0
+                    
+            return {
+                "Symbol": symbol,
+                "Score_5": int(score_out_of_5),
+                "EMA_Gap_Pct": round(gap_pct, 2),
+                "Daily_Change_Pct": round(daily_change_pct, 2),
+                "Crossover_Bars_Ago": crossover_bars_ago,
+                "Price": round(current_price, 2),
+                "EMA_Match": bool(cond_ema),
+                "MACD_Match": bool(cond_macd),
+                "RSI_Match": bool(cond_rsi),
+                "ADX_Match": bool(cond_adx),
+                "MOM_Match": bool(cond_mom),
+                "RSI_Val": round(c_rsi, 1),
+                "ADX_Val": round(c_adx, 1)
+            }
             
         except Exception as e:
             print(f"[TechnicalEngine 1H] Hata ({symbol}): {e}")
@@ -382,25 +450,41 @@ class TechnicalEngine(BaseEngine):
         for i in range(1, len(df)):
             idx_time = int(df.index[i].timestamp())
             
-            # 1. EMA Crossover
-            if pd.notna(df['EMA8'].iloc[i]) and pd.notna(df['EMA21'].iloc[i]):
-                if df['EMA8'].iloc[i-1] <= df['EMA21'].iloc[i-1] and df['EMA8'].iloc[i] > df['EMA21'].iloc[i]:
-                    annotations.append({"time": idx_time, "position": "belowBar", "color": "#10b981", "shape": "arrowUp", "text": "EMA AL", "type": "ema"})
-                elif df['EMA8'].iloc[i-1] >= df['EMA21'].iloc[i-1] and df['EMA8'].iloc[i] < df['EMA21'].iloc[i]:
-                    annotations.append({"time": idx_time, "position": "aboveBar", "color": "#ef4444", "shape": "arrowDown", "text": "EMA SAT", "type": "ema"})
+            # Bools
+            has_ema = pd.notna(df['EMA8'].iloc[i]) and pd.notna(df['EMA21'].iloc[i])
+            has_macd = pd.notna(df['MACD'].iloc[i]) and pd.notna(df['MACD_Signal'].iloc[i])
+            
+            ema_cross_up = has_ema and df['EMA8'].iloc[i-1] <= df['EMA21'].iloc[i-1] and df['EMA8'].iloc[i] > df['EMA21'].iloc[i]
+            ema_cross_down = has_ema and df['EMA8'].iloc[i-1] >= df['EMA21'].iloc[i-1] and df['EMA8'].iloc[i] < df['EMA21'].iloc[i]
+            
+            macd_cross_up = has_macd and df['MACD'].iloc[i-1] <= df['MACD_Signal'].iloc[i-1] and df['MACD'].iloc[i] > df['MACD_Signal'].iloc[i]
+            macd_cross_down = has_macd and df['MACD'].iloc[i-1] >= df['MACD_Signal'].iloc[i-1] and df['MACD'].iloc[i] < df['MACD_Signal'].iloc[i]
+            
+            ema_bull = has_ema and df['EMA8'].iloc[i] > df['EMA21'].iloc[i]
+            macd_bull = has_macd and df['MACD'].iloc[i] > df['MACD_Signal'].iloc[i]
+            ema_bear = has_ema and df['EMA8'].iloc[i] < df['EMA21'].iloc[i]
+            macd_bear = has_macd and df['MACD'].iloc[i] < df['MACD_Signal'].iloc[i]
+            
+            is_strong_macd_up = macd_cross_up and df['MACD'].iloc[i] < 0
+            is_strong_macd_down = macd_cross_down and df['MACD'].iloc[i] > 0
+            
+            # ORTAK AL / SAT
+            if (ema_cross_up and macd_bull) or (macd_cross_up and ema_bull):
+                annotations.append({"time": idx_time, "position": "belowBar", "color": "#10b981", "shape": "arrowUp", "text": "ORTAK AL", "type": "ortak"})
+            elif (ema_cross_down and macd_bear) or (macd_cross_down and ema_bear):
+                annotations.append({"time": idx_time, "position": "aboveBar", "color": "#ef4444", "shape": "arrowDown", "text": "ORTAK SAT", "type": "ortak"})
+            else:
+                if is_strong_macd_up:
+                    annotations.append({"time": idx_time, "position": "belowBar", "color": "#3b82f6", "shape": "arrowUp", "text": "DİP MACD AL", "type": "macd"})
+                elif is_strong_macd_down:
+                    annotations.append({"time": idx_time, "position": "aboveBar", "color": "#f59e0b", "shape": "arrowDown", "text": "TEPE MACD SAT", "type": "macd"})
                     
-            # 2. MACD Crossover
-            if pd.notna(df['MACD'].iloc[i]) and pd.notna(df['MACD_Signal'].iloc[i]):
-                if df['MACD'].iloc[i-1] <= df['MACD_Signal'].iloc[i-1] and df['MACD'].iloc[i] > df['MACD_Signal'].iloc[i]:
-                    annotations.append({"time": idx_time, "position": "belowBar", "color": "#3b82f6", "shape": "arrowUp", "text": "MACD AL", "type": "macd"})
-                elif df['MACD'].iloc[i-1] >= df['MACD_Signal'].iloc[i-1] and df['MACD'].iloc[i] < df['MACD_Signal'].iloc[i]:
-                    annotations.append({"time": idx_time, "position": "aboveBar", "color": "#f59e0b", "shape": "arrowDown", "text": "MACD SAT", "type": "macd"})
-                    
-            # 3. ADX Zone
-            if pd.notna(df['ADX'].iloc[i]) and pd.notna(df['PLUS_DI'].iloc[i]):
-                if df['ADX'].iloc[i] > 20 and df['PLUS_DI'].iloc[i] > df['MINUS_DI'].iloc[i] and df['ADX'].iloc[i] > df['ADX'].iloc[i-1]:
-                    if df['ADX'].iloc[i-1] <= 20 or df['PLUS_DI'].iloc[i-1] <= df['MINUS_DI'].iloc[i-1]:
-                        annotations.append({"time": idx_time, "position": "belowBar", "color": "#eab308", "shape": "arrowUp", "text": "Güçlü Trend", "type": "adx"})
+            # ADX Zone (sadece ortak sinyal yoksa göster ki çok kalabalık olmasın)
+            if not ((ema_cross_up and macd_bull) or (macd_cross_up and ema_bull) or is_strong_macd_up):
+                if pd.notna(df['ADX'].iloc[i]) and pd.notna(df['PLUS_DI'].iloc[i]):
+                    if df['ADX'].iloc[i] > 20 and df['PLUS_DI'].iloc[i] > df['MINUS_DI'].iloc[i] and df['ADX'].iloc[i] > df['ADX'].iloc[i-1]:
+                        if df['ADX'].iloc[i-1] <= 20 or df['PLUS_DI'].iloc[i-1] <= df['MINUS_DI'].iloc[i-1]:
+                            annotations.append({"time": idx_time, "position": "belowBar", "color": "#eab308", "shape": "arrowUp", "text": "Güçlü Trend", "type": "adx"})
                         
         candles = []
         for idx, row in df.iterrows():
