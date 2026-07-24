@@ -31,7 +31,7 @@
         </div>
         <div class="nav-actions">
             <button class="nav-btn active" onclick="switchMainTab('home', this)"><i class="fa-solid fa-house"></i> GİRİŞ</button>
-            <button class="nav-btn" onclick="switchMainTab('dashboard', this)">PANEL (DASHBOARD)</button>
+
             <button class="nav-btn" onclick="switchMainTab('radar', this)">RADAR</button>
             <button class="nav-btn" onclick="switchMainTab('news', this)">HABERLER (KAP)</button>
             <div class="status-indicator">
@@ -346,6 +346,8 @@
                             <label style="color:#10B981; font-size:0.85rem; cursor:pointer;"><input type="checkbox" id="toggle-vol" checked onchange="renderAdvancedChart()"> Volume</label>
                             <label style="color:#8b5cf6; font-size:0.85rem; cursor:pointer;"><input type="checkbox" id="toggle-macd" checked onchange="renderAdvancedChart()"> MACD Signals</label>
                             <label style="color:#f59e0b; font-size:0.85rem; cursor:pointer;"><input type="checkbox" id="toggle-adx" checked onchange="renderAdvancedChart()"> ADX Zones</label>
+                            
+
                             
                             <div style="margin-left:auto; display:flex; gap:5px;" id="tf-buttons">
                                 <button class="tf-btn" onclick="changeChartInterval('5m')">5m</button>
@@ -829,6 +831,6 @@
         </div>
     </div>
 
-    <script src="app.js?v=20260723_v2"></script>
+    <script src="app.js?v=20260724_v10"></script>
 </body>
 </html>

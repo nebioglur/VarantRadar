@@ -622,28 +622,8 @@ window.renderAdvancedChart = async function() {
         let sEma21 = c1.addLineSeries({ color: '#f59e0b', lineWidth: 1 });
         sEma21.setData(data.candles.map(c => c.ema21 != null ? {time: c.time, value: c.ema21} : {time: c.time}));
         
-        // SuperTrend with Area Shading (Soluk yeşil/kırmızı gölgeler)
-        let sStUp = c1.addAreaSeries({
-            lineColor: 'rgba(16, 185, 129, 0.8)',
-            lineWidth: 2,
-            topColor: 'rgba(16, 185, 129, 0.15)',
-            bottomColor: 'rgba(16, 185, 129, 0.0)',
-            crosshairMarkerVisible: false,
-        });
-        sStUp.setData(data.candles.map(c => (c.supertrend != null && c.supertrend_dir === 1) ? {time: c.time, value: c.supertrend} : {time: c.time}));
-        
-        let sStDown = c1.addAreaSeries({
-            lineColor: 'rgba(239, 68, 68, 0.8)',
-            lineWidth: 2,
-            topColor: 'rgba(239, 68, 68, 0.0)',
-            bottomColor: 'rgba(239, 68, 68, 0.15)',
-            invertFilledArea: true, // Alanı yukarı doğru doldurur
-            crosshairMarkerVisible: false,
-        });
-        sStDown.setData(data.candles.map(c => (c.supertrend != null && c.supertrend_dir === -1) ? {time: c.time, value: c.supertrend} : {time: c.time}));
-
-        
         // PANE 2: MACD
+
         c2.priceScale('right').applyOptions({ scaleMargins: { top: 0.1, bottom: 0.1 } });
         let sMacd = c2.addLineSeries({ color: '#3b82f6', lineWidth: 1.5 });
         sMacd.setData(data.candles.map(c => c.macd != null ? {time: c.time, value: c.macd} : {time: c.time}));
@@ -1522,7 +1502,15 @@ function renderAllDashboardTables() {
                 let sColor = s5 === 5 ? 'var(--accent-green)' : (s5 >= 4 ? 'var(--accent-blue)' : 'var(--accent-yellow)');
                 scoreContent = `<span style="color:${sColor};font-weight:700;">${s5} / 5</span>`;
                 
-                statusStr = `<span style="font-size:0.75rem; color:var(--text-muted);">ADX:${res.ADX_Val} RSI:${res.RSI_Val}</span>`;
+                if (res.Daily_Change_Pct !== undefined) {
+                    let d_pct = parseFloat(res.Daily_Change_Pct);
+                    let d_c = d_pct > 0 ? "var(--accent-green)" : (d_pct < 0 ? "var(--accent-red)" : "var(--text-muted)");
+                    let d_sign = d_pct > 0 ? "+" : "";
+                    priceStr += `<br><span style="color:${d_c}; font-size:0.75rem;">(${d_sign}%${Math.abs(d_pct).toFixed(2)})</span>`;
+                }
+                
+                let barsAgoMain = res.Crossover_Bars_Ago !== undefined ? res.Crossover_Bars_Ago : '?';
+                statusStr = `<span style="font-size:0.75rem; color:var(--text-muted);">🔀 ${barsAgoMain}s önce | ADX:${res.ADX_Val} RSI:${res.RSI_Val}</span>`;
             } else {
                 let scoreValue = res.Score !== undefined ? res.Score : 0;
                 let scoreColor = scoreValue >= 70 ? 'var(--accent-green)' : (scoreValue >= 50 ? 'var(--accent-yellow)' : 'var(--accent-red)');
@@ -1569,8 +1557,18 @@ function renderAllDashboardTables() {
                 let sColor = s5 === 5 ? 'var(--accent-green)' : (s5 >= 4 ? 'var(--accent-blue)' : 'var(--accent-yellow)');
                 let priceStr = res.Price ? "₺" + parseFloat(res.Price).toFixed(2) : "-";
                 
+                if (res.Daily_Change_Pct !== undefined) {
+                    let d_pct = parseFloat(res.Daily_Change_Pct);
+                    let d_c = d_pct > 0 ? "var(--accent-green)" : (d_pct < 0 ? "var(--accent-red)" : "var(--text-muted)");
+                    let d_sign = d_pct > 0 ? "+" : "";
+                    priceStr += `<br><span style="color:${d_c}; font-size:0.75rem;">(${d_sign}%${Math.abs(d_pct).toFixed(2)})</span>`;
+                }
+                
                 let details = [];
-                if (res.EMA_Match) details.push("<span style='color:#3b82f6'>EMA Kesişimi</span>");
+                if (res.EMA_Gap_Pct !== undefined) {
+                    let barsAgo = res.Crossover_Bars_Ago !== undefined ? res.Crossover_Bars_Ago : '?';
+                    details.push(`<span style='color:#10b981; font-weight:bold; border:1px solid #10b981; padding:2px 4px; border-radius:4px; font-size:0.75rem;'>🔀 Kesişim ${barsAgo} saat önce | Fark: %${res.EMA_Gap_Pct}</span>`);
+                }
                 if (res.MACD_Match) details.push("<span style='color:#f59e0b'>MACD AL</span>");
                 if (res.RSI_Match) details.push("<span style='color:#10b981'>RSI>50</span>");
                 if (res.ADX_Match) details.push("<span style='color:#8b5cf6'>Güçlü Trend</span>");

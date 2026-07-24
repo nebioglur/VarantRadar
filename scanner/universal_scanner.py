@@ -186,8 +186,15 @@ class UniversalScanner:
                     res = self._process_bulk_df_1h(sym, df)
                     if res: opportunities.append(res)
                     
-        # Score_5 (0-5) puanına göre sırala (5 en iyi)
-        opportunities = sorted(opportunities, key=lambda x: x["Score_5"], reverse=True)
+        # Kesişim ne kadar yeniyse (Crossover_Bars_Ago az ise) o kadar üstte olsun.
+        # İkinci kriter olarak fark (EMA_Gap_Pct) büyük olanı üste al.
+        opportunities = sorted(
+            opportunities,
+            key=lambda x: (x.get("Crossover_Bars_Ago", 999), -x.get("EMA_Gap_Pct", 0))
+        )
+        # Sadece kullanıcının kuralını karşılayanları döndür (Sınır kaldırıldı, tüm fırsatlar gösterilecek)
+        # opportunities = opportunities[:20]
+        
         print(f"[SCANNER 1H] Tarama tamamlandı. {len(opportunities)} fırsat bulundu.")
         return opportunities
 
